@@ -43,6 +43,7 @@ class H3LoopingSampler:
                         "min": 0.0,
                         "max": 1.0,
                         "step": 0.01,
+                        "tooltip": "Força da nova chunk na zona de overlap (0 = mantém só o anterior, 1 = blend total)",
                     },
                 ),
                 "horizontal_tiles": ("INT", {"default": 1, "min": 1, "max": 4}),
@@ -150,10 +151,10 @@ class H3LoopingSampler:
             raise ValueError(f"Expected video [B,C,T,H,W], got {tuple(video.shape)}")
 
         B, C, T, H, W = video.shape
-        print(f"\n========== H3LoopingSampler ComfyGuy9000==========")
+        print(f"\n========== H3LoopingSampler ComfyGuy9000 ==========")
         print(f"Input video latent: {video.shape}")
         print(f"Tiles: {vertical_tiles}x{horizontal_tiles} | spatial_overlap={spatial_overlap}")
-        print(f"Temporal tile={temporal_tile_size} | overlap={temporal_overlap}")
+        print(f"Temporal tile={temporal_tile_size} | overlap={temporal_overlap} | strength={temporal_overlap_strength}")
 
         original_tensors = self._get_tensors(samples)
         has_audio = len(original_tensors) > 1
@@ -243,16 +244,16 @@ class H3LoopingSampler:
                     if "x0" in x0_output:
                         x0 = x0_output["x0"]
                         if self._is_nested(out_samples) and not self._is_nested(x0):
-                            # Tenta reconstruir NestedTensor se necessário
                             try:
                                 latent_shapes = [t.shape for t in self._get_tensors(out_samples)]
                                 x0 = NestedTensor(comfy.utils.unpack_latents(x0, latent_shapes))
                             except:
                                 pass
                         chunk_denoised_video = self._get_video(x0)
-                        # Aplica process_latent_out se possível
                         try:
-                            chunk_denoised_video = guider.model_patcher.model.process_latent_out(chunk_denoised_video.cpu()).to(chunk_out_video.device)
+                            chunk_denoised_video = guider.model_patcher.model.process_latent_out(
+                                chunk_denoised_video.cpu()
+                            ).to(chunk_out_video.device)
                         except:
                             chunk_denoised_video = chunk_denoised_video.to(chunk_out_video.device)
                     else:
@@ -270,25 +271,42 @@ class H3LoopingSampler:
                         chunk_out_video = self._adain(chunk_out_video, ref, adain_factor)
                         chunk_denoised_video = self._adain(chunk_denoised_video, ref, adain_factor)
 
-                    # Blend temporal - output normal
+                    # === Blend temporal (CORRIGIDO) ===
                     if tile_out_video is None:
                         tile_out_video = chunk_out_video
                         tile_denoised_video = chunk_denoised_video
                     else:
                         overlap = temporal_overlap
                         if overlap > 0 and tile_out_video.shape[2] >= overlap:
-                            # Blend output normal
+                            alpha = torch.linspace(
+                                1.0, 0.0, overlap,
+                                device=tile_out_video.device,
+                                dtype=tile_out_video.dtype
+                            ).view(1, 1, -1, 1, 1)
+
+                            # Fórmula corrigida:
+                            # strength = 0.0 → mantém só o anterior
+                            # strength = 1.0 → blend linear normal
                             prev = tile_out_video[:, :, -overlap:]
                             new = chunk_out_video[:, :, :overlap]
-                            alpha = torch.linspace(1.0, 0.0, overlap, device=tile_out_video.device, dtype=tile_out_video.dtype).view(1, 1, -1, 1, 1)
-                            blended = prev * alpha + new * (1.0 - alpha) * temporal_overlap_strength + new * (1.0 - temporal_overlap_strength) * (1.0 - alpha)
-                            tile_out_video = torch.cat([tile_out_video[:, :, :-overlap], blended, chunk_out_video[:, :, overlap:]], dim=2)
+                            blended = prev * (1.0 - (1.0 - alpha) * temporal_overlap_strength) + \
+                                      new * (1.0 - alpha) * temporal_overlap_strength
+
+                            tile_out_video = torch.cat(
+                                [tile_out_video[:, :, :-overlap], blended, chunk_out_video[:, :, overlap:]],
+                                dim=2
+                            )
 
                             # Blend denoised
                             prev_d = tile_denoised_video[:, :, -overlap:]
                             new_d = chunk_denoised_video[:, :, :overlap]
-                            blended_d = prev_d * alpha + new_d * (1.0 - alpha) * temporal_overlap_strength + new_d * (1.0 - temporal_overlap_strength) * (1.0 - alpha)
-                            tile_denoised_video = torch.cat([tile_denoised_video[:, :, :-overlap], blended_d, chunk_denoised_video[:, :, overlap:]], dim=2)
+                            blended_d = prev_d * (1.0 - (1.0 - alpha) * temporal_overlap_strength) + \
+                                        new_d * (1.0 - alpha) * temporal_overlap_strength
+
+                            tile_denoised_video = torch.cat(
+                                [tile_denoised_video[:, :, :-overlap], blended_d, chunk_denoised_video[:, :, overlap:]],
+                                dim=2
+                            )
                         else:
                             tile_out_video = torch.cat([tile_out_video, chunk_out_video], dim=2)
                             tile_denoised_video = torch.cat([tile_denoised_video, chunk_denoised_video], dim=2)
@@ -352,5 +370,5 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "H3LoopingSampler_ComfyGuy9000": "H3 Looping / Tiled Sampler"
+    "H3LoopingSampler": "H3 Looping / Tiled Sampler (ComfyGuy9000)"
 }
