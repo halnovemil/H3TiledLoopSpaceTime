@@ -28,3 +28,5 @@ Recommended Settings
 Feel free to experiment with different values.
 
 Enjoy!
+
+Example VIDS is here >> https://huggingface.co/hal9000ace/H3TilingExampleVids/tree/main
